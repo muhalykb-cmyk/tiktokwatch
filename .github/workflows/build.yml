@@ -1,0 +1,189 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Create project
+        run: |
+          mkdir -p app/src/main/java/com/example/tiktokwatch
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "tiktokwatch"
+          include(":app")
+          EOF
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          echo "org.gradle.jvmargs=-Xmx2g" > gradle.properties
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.example.tiktokwatch"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.tiktokwatch"
+                  minSdk = 30
+                  targetSdk = 33
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+          }
+          kotlin { jvmToolchain(17) }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-feature android:name="android.hardware.type.watch" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application android:label="TikTok Watch" android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault">
+                  <uses-library android:name="com.google.android.wearable" android:required="false" />
+                  <meta-data android:name="com.google.android.wearable.standalone" android:value="true" />
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/example/tiktokwatch/MainActivity.kt <<'EOF'
+          package com.example.tiktokwatch
+
+          import android.annotation.SuppressLint
+          import android.app.Activity
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewConfiguration
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.Button
+          import android.widget.FrameLayout
+
+          class MainActivity : Activity() {
+
+              private lateinit var web: WebView
+              private lateinit var controls: List<View>
+              private lateinit var restore: Button
+
+              private val hideCss = """
+                  (function(){var s=document.getElementById('wx');
+                  if(!s){s=document.createElement('style');s.id='wx';document.head.appendChild(s);}
+                  s.textContent='[data-e2e*="like"],[data-e2e*="comment"],[data-e2e*="share"],[data-e2e*="follow"],[data-e2e*="nav"],[data-e2e*="search"],header,nav,footer{display:none!important}';})();
+              """.trimIndent()
+
+              private val showCss =
+                  "(function(){var s=document.getElementById('wx');if(s)s.textContent='';})();"
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val d = resources.displayMetrics.density
+                  val size = (52 * d).toInt()
+
+                  web = WebView(this).apply {
+                      settings.javaScriptEnabled = true
+                      settings.domStorageEnabled = true
+                      settings.mediaPlaybackRequiresUserGesture = false
+                      settings.loadWithOverviewMode = true
+                      settings.useWideViewPort = true
+                      settings.userAgentString =
+                          "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                          "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+                      webViewClient = object : WebViewClient() {
+                          override fun onPageFinished(v: WebView, url: String) {
+                              if (restore.visibility == View.VISIBLE) v.evaluateJavascript(hideCss, null)
+                          }
+                      }
+                      loadUrl("https://www.tiktok.com/foryou")
+                  }
+
+                  fun btn(text: String, gravity: Int, onClick: () -> Unit) = Button(this).apply {
+                      this.text = text
+                      textSize = 20f
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.argb(150, 0, 0, 0))
+                      setPadding(0, 0, 0, 0)
+                      layoutParams = FrameLayout.LayoutParams(size, size, gravity)
+                      setOnClickListener { onClick() }
+                  }
+
+                  val up = btn("▲", Gravity.START or Gravity.CENTER_VERTICAL) { key(KeyEvent.KEYCODE_DPAD_UP) }
+                  val down = btn("▼", Gravity.END or Gravity.CENTER_VERTICAL) { key(KeyEvent.KEYCODE_DPAD_DOWN) }
+                  val like = btn("❤", Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) { key(KeyEvent.KEYCODE_L) }
+                  val mute = btn("🔊", Gravity.TOP or Gravity.START) { key(KeyEvent.KEYCODE_M) }
+                  val hide = btn("⛶", Gravity.TOP or Gravity.CENTER_HORIZONTAL) { setVideoOnly(true) }
+
+                  // Маленька кнопка повернення (видно тільки у режимі "тільки відео")
+                  restore = btn("☰", Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL) { setVideoOnly(false) }.apply {
+                      alpha = 0.35f
+                      visibility = View.GONE
+                  }
+
+                  controls = listOf(up, down, like, mute, hide)
+
+                  setContentView(FrameLayout(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      addView(web, FrameLayout.LayoutParams(-1, -1))
+                      controls.forEach { addView(it) }
+                      addView(restore)
+                  })
+              }
+
+              private fun setVideoOnly(on: Boolean) {
+                  controls.forEach { it.visibility = if (on) View.GONE else View.VISIBLE }
+                  restore.visibility = if (on) View.VISIBLE else View.GONE
+                  web.evaluateJavascript(if (on) hideCss else showCss, null)
+              }
+
+              private fun key(code: Int) {
+                  web.requestFocus()
+                  web.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                  web.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+              }
+
+              // Фізичний/сенсорний безель: крутиш — гортаєш відео
+              override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+                  if (e.action == MotionEvent.ACTION_SCROLL && e.isFromSource(0x00400000)) {
+                      val v = -e.getAxisValue(MotionEvent.AXIS_SCROLL) *
+                          ViewConfiguration.get(this).scaledVerticalScrollFactor
+                      key(if (v > 0) KeyEvent.KEYCODE_DPAD_UP else KeyEvent.KEYCODE_DPAD_DOWN)
+                      return true
+                  }
+                  return super.onGenericMotionEvent(e)
+              }
+
+              override fun onBackPressed() {
+                  if (restore.visibility == View.VISIBLE) setVideoOnly(false)
+                  else if (web.canGoBack()) web.goBack() else super.onBackPressed()
+              }
+          }
+          EOF
+      - name: Build
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null || true; gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-watch-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
